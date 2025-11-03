@@ -12,7 +12,6 @@ database_name_list = [
 
 data_dir = "/home/weixun/data/db_workload/datasets/"
 
-# PostgreSQL连接参数
 pg_user = "weixun"
 pg_password = ""
 pg_host = "127.0.0.1"

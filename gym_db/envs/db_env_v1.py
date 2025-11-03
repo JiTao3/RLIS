@@ -24,7 +24,6 @@ class DBEnvV1(gym.Env):
     def __init__(self, environment_type=EnvironmentType.TRAINING, config=None):
         super().__init__()
 
-        # 检查配置参数
         if config is None:
             raise ValueError("Config parameter cannot be None")
 
@@ -37,20 +36,17 @@ class DBEnvV1(gym.Env):
         self.number_of_resets = 0
         self.total_number_of_steps = 0
 
-        # 存储当前连接的数据库名称
         self.current_database_name = None
         self.connector = None
         self.cost_evaluation = None
         self._process_id = os.getpid()
 
         self.globally_indexable_columns = config["globally_indexable_columns"]
-        # In certain cases, workloads are consumed: therefore, we need copy
         self.workload = copy.copy(config["workload"])
         self.current_workload_idx = 0
         self.max_steps_per_episode = config["max_steps_per_episode"]
 
         self.action_manager = config["action_manager"]
-        # self.action_manager.test_variable = self.env_id
         self.action_space = self.action_manager.get_action_space()
 
         self.observation_manager = config["observation_manager"]
@@ -72,33 +68,25 @@ class DBEnvV1(gym.Env):
 
         self.temperature = 1.0
 
-        # self._ensure_database_connection()
         self._init_modifiable_state(init=True)
-
-        # if self.environment_type != environment_type.TRAINING:
-        #     self.episode_performances = collections.deque(maxlen=10)
 
     def set_temperature(self, temperature):
         self.temperature = temperature
 
     def _ensure_database_connection(self, database_name=None):
-        """确保数据库连接已初始化，支持动态切换数据库和进程"""
         current_pid = os.getpid()
         target_db = database_name or self.database_name
 
-        # 检查是否需要重新连接（进程变化或数据库变化）
         need_reconnect = (
             self.current_database_name != target_db or self.connector is None or self._process_id != current_pid
         )
 
         if need_reconnect:
             try:
-                # 关闭现有连接
                 if self.connector:
                     self.connector.close()
                     logging.debug(f"Closed connection to database: {self.current_database_name}")
 
-                # 创建新连接
                 self.connector = PostgresDatabaseConnector(target_db, autocommit=True)
                 self.connector.drop_indexes(drop_consistent=False)
                 self.cost_evaluation = CostEvaluation(self.connector)
@@ -112,25 +100,18 @@ class DBEnvV1(gym.Env):
                 raise
 
     def __getstate__(self):
-        """支持 pickle 序列化：排除不可序列化的数据库连接对象和Manager锁"""
         state = self.__dict__.copy()
-        # 移除不可序列化的数据库连接
         state["connector"] = None
         state["cost_evaluation"] = None
-        # 移除不可序列化的Manager锁对象
         state["db_lock"] = None
-        # 保存当前进程ID用于检测进程变化
         state["_process_id"] = os.getpid()
         logging.debug(f"Pickling env {state.get('env_id', 'unknown')} from process {os.getpid()}")
         return state
 
     def __setstate__(self, state):
-        """支持 pickle 反序列化：状态恢复但不立即创建数据库连接"""
         self.__dict__.update(state)
-        # 数据库连接将在需要时创建
         self.connector = None
         self.cost_evaluation = None
-        # 锁对象将在需要时重新获取
         self.db_lock = None
         current_pid = os.getpid()
         logging.debug(f"Unpickling env {self.env_id} in process {current_pid}")
@@ -138,12 +119,8 @@ class DBEnvV1(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        # 修复：如果提供了seed，重置内部随机数生成器
         if seed is not None:
             self.rnd.seed(seed)
-
-        # 确保数据库连接已初始化
-        # self._ensure_database_connection()
 
         self.number_of_resets += 1
         self.total_number_of_steps += self.steps_taken
@@ -152,17 +129,10 @@ class DBEnvV1(gym.Env):
         self.reward_calculator.reset(self.db_size)
 
         info = {}
-        # self.check_observation_space(initial_observation)
         return initial_observation, info
 
-    # def check_observation_space(self, observation):
-    #     # 检查observation中的每一个key对应的box是否满足observation_space中的box
-    #     for key, value in observation.items():
-    #         assert key in self.observation_space.keys(), f"{key} not in observation_space"
-    #         assert self.observation_space[key].contains(value), f"{key} not in observation_space"
 
     def _step_asserts(self, action):
-        # assert self.action_space.contains(action), f"{action} ({type(action)}) invalid"
         assert (
             self.valid_actions[action] == self.action_manager.ALLOWED_ACTION
         ), f"Agent has chosen invalid action: {action}"
@@ -171,15 +141,12 @@ class DBEnvV1(gym.Env):
         ), f"{Index(self.globally_indexable_columns[action])} already in self.current_indexes"
 
     def step(self, action):
-        # 确保数据库连接已初始化
         self._ensure_database_connection()
 
-        # 将连续动作映射到离散索引
         discrete_action, _, chosen_action_embedding = self.action_manager.map_continuous_action_to_discrete(
             action, self.temperature
         )
 
-        # 检查是否为停止动作
         if discrete_action == self.action_manager.STOP_ACTION_INDEX:
             environment_state = self._update_return_env_state(init=False)
             environment_state["stop_action"] = -1
@@ -195,13 +162,10 @@ class DBEnvV1(gym.Env):
                 "is_stop_action": True,
                 "chosen_action_embedding": chosen_action_embedding,
             }
-            # 安全地释放锁
             self._safe_lock_release(self.current_database_name)
             return current_observation, reward, terminated, truncated, infos
 
-        # 检查是否有有效动作
         if discrete_action is None:
-            # 如果没有有效动作，结束episode
             environment_state = self._update_return_env_state(init=False)
             current_observation = self.observation_manager.get_observation(environment_state)
             reward = self.reward_calculator.calculate_reward(environment_state)
@@ -226,15 +190,6 @@ class DBEnvV1(gym.Env):
         new_index = Index(self.globally_indexable_columns[discrete_action])
         self.current_indexes.add(new_index)
 
-        # if not new_index.is_single_column():
-        #     parent_index = Index(new_index.columns[:-1])
-
-        #     for index in self.current_indexes:
-        #         if index == parent_index:
-        #             old_index_size = index.estimated_size
-        #     if parent_index in self.current_indexes:
-        #         self.current_indexes.remove(parent_index)
-
         available_budget = self.current_budget - self.current_storage_consumption
 
         self.valid_actions, is_valid_action_left = self.action_manager.update_valid_actions(
@@ -253,11 +208,8 @@ class DBEnvV1(gym.Env):
 
         reward = self.reward_calculator.calculate_reward(environment_state)
 
-        # if episode_done and self.environment_type != EnvironmentType.TRAINING:
-        #     # self._report_episode_performance(environment_state)
         self.current_workload_idx += 1
 
-        # 返回符合 gym 接口的结果
         terminated = episode_done
         truncated = False
         infos = {
@@ -269,7 +221,6 @@ class DBEnvV1(gym.Env):
         }
 
         if terminated:
-            # 安全地释放锁
             self._safe_lock_release(self.current_database_name)
 
         return current_observation, reward, terminated, truncated, infos
@@ -292,15 +243,8 @@ class DBEnvV1(gym.Env):
         )
         logging.warning(output)
 
-        # self.episode_performances.append(episode_performance)
 
     def _init_modifiable_state(self, init=False):
-
-        # random select a database
-        # random select a workload
-        # switch database context
-        #   new action manager & observation manager
-        # switch workload
         if self.environment_type == EnvironmentType.TRAINING and not init:
             self.action_manager, self.observation_manager = self._switch_database_context()
 
@@ -337,13 +281,11 @@ class DBEnvV1(gym.Env):
 
     def random_select_database(self):
 
-        # 等待超时设置（30秒）
         wait_timeout = 30.0
-        check_interval = 0.5  # 每0.5秒检查一次
+        check_interval = 0.5
         start_time = time.time()
 
         while True:
-            # 获取可用的数据库列表（优先选择未被锁定的）
             available_dbs = []
             locked_dbs = []
 
@@ -354,12 +296,10 @@ class DBEnvV1(gym.Env):
                 else:
                     locked_dbs.append(db_name)
 
-            # 如果有可用数据库，立即选择一个
             if available_dbs:
                 random_db_name = self.rnd.choice(available_dbs)
                 break
 
-            # 检查是否超时
             elapsed_time = time.time() - start_time
             if elapsed_time >= wait_timeout:
                 raise Exception("Timeout waiting for available database")
@@ -406,10 +346,8 @@ class DBEnvV1(gym.Env):
         return action_manager, observation_manager
 
     def _update_return_env_state(self, init, new_index=None, old_index_size=None):
-        # 确保数据库连接已初始化
         self._ensure_database_connection()
 
-        # 此时 cost_evaluation 应该已经初始化
         assert self.cost_evaluation is not None, "Cost evaluation should be initialized"
         total_costs, costs_per_query = self.cost_evaluation.calculate_cost(
             self.current_workload, self.current_indexes, store_size=True
@@ -428,9 +366,6 @@ class DBEnvV1(gym.Env):
         if new_index is not None:
             self.current_storage_consumption += new_index.estimated_size
             self.current_storage_consumption -= old_index_size
-
-            # This assumes that old_index_size is not None if new_index is not None
-            # assert new_index.estimated_size >= old_index_size
 
             new_index_size = new_index.estimated_size - old_index_size
             if new_index_size == 0:
@@ -458,16 +393,12 @@ class DBEnvV1(gym.Env):
         return environment_state
 
     def get_cost_eval_cache_info(self):
-        # 确保数据库连接已初始化
         self._ensure_database_connection()
-        # 此时 cost_evaluation 应该已经初始化
         assert self.cost_evaluation is not None, "Cost evaluation should be initialized"
         return self.cost_evaluation.cost_requests, self.cost_evaluation.cache_hits, self.cost_evaluation.costing_time
 
     def get_cost_eval_cache(self):
-        # 确保数据库连接已初始化
         self._ensure_database_connection()
-        # 此时 cost_evaluation 应该已经初始化
         assert self.cost_evaluation is not None, "Cost evaluation should be initialized"
         return self.cost_evaluation.cache
 
@@ -477,7 +408,6 @@ class DBEnvV1(gym.Env):
 
     def close(self):
         print("close() was called")
-        # 清理数据库连接
         if self.connector is not None:
             try:
                 self.connector.close()
@@ -489,16 +419,13 @@ class DBEnvV1(gym.Env):
                 self.cost_evaluation = None
 
     def _get_db_lock(self, database_name):
-        """获取数据库锁，如果不存在则返回None（用于多进程环境）"""
         if hasattr(self, "db_lock") and self.db_lock and database_name in self.db_lock:
             return self.db_lock[database_name]
         else:
-            # 在子进程中，我们可能没有锁的引用，这时跳过锁操作
             logging.debug(f"Database lock not available for {database_name} in process {os.getpid()}")
             return None
 
     def _safe_lock_acquire(self, database_name):
-        """安全地获取数据库锁"""
         db_lock = self._get_db_lock(database_name)
         if db_lock:
             db_lock.acquire()
@@ -507,7 +434,6 @@ class DBEnvV1(gym.Env):
             logging.debug(f"No lock to acquire for database: {database_name}")
 
     def _safe_lock_release(self, database_name):
-        """安全地释放数据库锁"""
         db_lock = self._get_db_lock(database_name)
         if db_lock:
             try:

@@ -25,13 +25,6 @@ class CustomDictRolloutBufferSamples(NamedTuple):
 
 
 class CustomRolloutBuffer(DictRolloutBuffer):
-    """
-    一个健壮的、可扩展的 Rollout Buffer，它在 DictRolloutBuffer 的基础上
-    增加了对 `chosen_action_embeddings` 的支持。
-
-    它通过重写 get() 方法来确保所有自定义字段都被正确地“展平” (flatten)，
-    从而与 Stable Baselines 3 的内部数据流完全兼容。
-    """
     def __init__(
         self,
         buffer_size: int,
@@ -104,13 +97,8 @@ class CustomRolloutBuffer(DictRolloutBuffer):
             start_idx += batch_size
 
     def _get_samples(self, batch_inds: np.ndarray) -> CustomDictRolloutBufferSamples:
-        """
-        根据索引从展平后的数据中获取一个批次。
-        """
-        # 使用父类方法获取所有标准数据
         base_data = super()._get_samples(batch_inds)
         
-        # 额外获取 chosen_action_embeddings 数据
         chosen_embeddings_tensor = self.to_torch(self.chosen_action_embeddings[batch_inds])
 
         return CustomDictRolloutBufferSamples(

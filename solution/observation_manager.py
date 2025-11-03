@@ -23,11 +23,6 @@ class ObservationManager(object):
 
         self.initial_cost = state_fix_for_episode["initial_cost"]
 
-    # def init_episode(self, state_fix_for_episode):
-    #     raise NotImplementedError
-
-    # def get_observation(self, environment_state):
-    #     raise NotImplementedError
 
     def get_observation_space(self):
         observation_space = spaces.Box(
@@ -66,11 +61,6 @@ class ObservationManager(object):
 
 
 class EmbeddingObservationManager(ObservationManager):
-    """
-    workload        => workload embedding + workload freq
-    meta of db      => storage budget + consumption + workload cost(init cost) + current cost
-    ?index(action)  => index or not?
-    """
 
     def __init__(
         self,
@@ -97,7 +87,6 @@ class EmbeddingObservationManager(ObservationManager):
 
     def init_episode(self, state_fix_for_episode):
         super()._init_episode(state_fix_for_episode)
-        # 支持直接传入工作负载或工作负载列表
         if isinstance(state_fix_for_episode["workload"], list):
             episode_workload = state_fix_for_episode["workload"][0]  # 使用第一个工作负载
         else:
@@ -105,7 +94,6 @@ class EmbeddingObservationManager(ObservationManager):
 
         self.frequencies = np.array(EmbeddingObservationManager._get_frequencies_from_workload(episode_workload))
 
-        # 初始化工作负载嵌入
         self.workload_embedding = self.workload_embedder.get_embeddings(episode_workload, self.statistic)
 
     def init_observation(self, state_fix_for_episode):

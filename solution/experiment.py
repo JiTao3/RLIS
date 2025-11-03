@@ -29,11 +29,6 @@ from .file_lock import create_db_locks
 
 
 class Experiment(object):
-    """
-    Single DB Version Experiment
-    TODO : 暂时采用枚举所有可能1-2列索引的方法。
-    TODO : Multi DB -> 以workload为单位 训练的时候切换上下文。
-    """
 
     def __init__(self, configuration_file):
         cp = ConfigurationParser(configuration_file)
@@ -74,25 +69,15 @@ class Experiment(object):
         self.reward_calculator = NormalizedIndexReward(shared_best_cost=shared_best_cost)
 
     def __getstate__(self):
-        """
-        自定义序列化方法，以处理不可序列化的Manager对象。
-        """
         state = self.__dict__.copy()
-        # Manager对象不可序列化，并且在子进程中也不需要它。
-        # 它创建的代理对象（如共享字典）是可序列化的。
         del state["manager"]
         return state
 
     def __setstate__(self, state):
-        """
-        自定义反序列化方法。
-        """
         self.__dict__.update(state)
-        # 在子进程中，管理器不会被恢复。
         self.manager = None
 
     def prepare(self):
-        # 创建statistics缓存目录
         statistics_cache_dir = os.path.join(self.EXPERIMENT_STATISTICS_PATH, "statistics_cache")
 
         for idx, benchmark in enumerate(self.config["workload"]["benchmarks"]):
@@ -120,7 +105,6 @@ class Experiment(object):
 
             action_storage_consumptions = utils.predict_index_sizes(globally_indexable_columns_flat, database_name)
 
-            # 使用Statistics类的缓存方法
             statistic = Statistics.load_from_cache_or_create(
                 statistics_cache_dir, database_name, schema.tables, schema.columns
             )
@@ -135,7 +119,6 @@ class Experiment(object):
                 action_storage_consumptions,
             )
 
-        # workload embedder 只需要一个实例
         self.workload_embedder = SQLWorkloadEmbedder(
             self.config["workload"]["workload_window_size"],
             self.config["workload_embedder"]["max_columns_per_query"],
@@ -169,10 +152,7 @@ class Experiment(object):
         ), f"Folder for experiment results should exist at: ./{self.EXPERIMENT_RESULT_PATH}"
 
         self.experiment_folder_path = f"{self.EXPERIMENT_RESULT_PATH}/ID_{self.id}"
-        # assert os.path.isdir(self.experiment_folder_path) == False, (
-        #     f"Experiment folder already exists at: ./{self.experiment_folder_path} - "
-        #     "terminating here because we don't want to overwrite anything."
-        # )
+
         if os.path.isdir(self.experiment_folder_path) == False:
             os.mkdir(self.experiment_folder_path)
         else:
@@ -316,20 +296,17 @@ class Experiment(object):
         self.model.save(f"{self.experiment_folder_path}/model_{env_id}_{env_type}")
         self.reward_calculator.save_best_cost_so_far(f"{self.experiment_folder_path}/best_cost_so_far_{env_id}_{env_type}.txt")
 
-    # Start of Selection
+
     def _load_pretrained_model(self, model_path, device="auto", load_best_cost_so_far=False):
         logging.info(f"Loading pretrained model from {model_path}")
-        # 兼容新版 PyTorch 的加载方式, 移除 weights_only 以兼容旧版 torch
         old_model = PPO.load(model_path, device=device)
         self.model.set_parameters(old_model.get_parameters())
         logging.info(f"Pretrained model loaded 👌👌👌")
-        #  /home/weixun/data/Index_Recommendation_ZS/exp_result/ID_All_Database_15/model_0_20250904_1636.zip
-        # 0 as env_id, 20250904_1636 as env_type
         if load_best_cost_so_far:
-            model_filename = model_path.split("/")[-1]  # model_0_20250904_1636.zip
-            model_parts = model_filename.split("_")     # ['model', '0', '20250904', '1636.zip']
-            env_id = model_parts[1]                     # '0'
-            env_type = model_parts[2] + "_" + model_parts[3].split(".")[0]  # '20250904_1636'
+            model_filename = model_path.split("/")[-1]  
+            model_parts = model_filename.split("_")     
+            env_id = model_parts[1] 
+            env_type = model_parts[2] + "_" + model_parts[3].split(".")[0]
             self.reward_calculator.load_best_cost_so_far(f"{self.experiment_folder_path}/best_cost_so_far_{env_id}_{env_type}.txt")
             logging.info(f"Best cost so far loaded 👌👌👌")
         return True

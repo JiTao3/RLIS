@@ -8,7 +8,7 @@
     "max_steps_per_episode": 100,
     "parallel_environments": 1,
     "statistics_path": "exp_statistics",
-    "load_pretrained_model": "/home/weixun/data/Index_Recommendation_ZS/exp_result/ID_All_Database_15/model_0_20250904_1638.zip",
+    "load_pretrained_model": "",
     "port": "12333",
     "cuda_device": "cuda:1",
     "rl_algorithm": {

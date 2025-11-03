@@ -213,9 +213,7 @@ class Query:
         self.order_by = set()
 
         parsed = parse_one(self.text, read="postgres")
-        # 在 qualify 之前，先对解析树进行规范化，这可能是一个必需的预处理步骤
         parsed = normalize.normalize(parsed)
-        # 使用 schema 信息来准确地为列添加表前缀
         parsed = optimizer.qualify.qualify(parsed, schema=self.schema)
 
         def is_join_condition(eq):
@@ -269,39 +267,28 @@ class Query:
         return hash(self.nr)
 
     def predicates_vector(self, vector_size, statistics):
-        """
-        将列的阈值划分为vector_size份，根据谓词与区间的交集生成编码向量
-        返回：{列名: 编码向量(shape=(vector_size,))}
-        """
+        predicate_vector = {} 
+        column_predicates = {}
 
-        predicate_vector = {}  # 列名 -> 编码向量
-        column_predicates = {}  # 列名 -> 该列的所有谓词信息
-
-        # 第一步：收集每个列的所有谓词信息
         for predicate_str in self.predicates:
             try:
-                # 直接解析谓词字符串
                 expr = sqlglot.parse_one(predicate_str, read="postgres")
             except:
                 logging.warning(f"Failed to parse predicate: {predicate_str}. Skipping...")
                 continue
 
-            # 处理二元比较操作
             if isinstance(expr, exp.Binary) and expr.key in ("gt", "gte", "lt", "lte", "eq", "neq"):
                 left, right = expr.left, expr.right
 
-                # 确保左操作数是列
                 if not isinstance(left, exp.Column):
                     continue
 
-                # 获取完整的列名
                 table_name = left.table if left.table else None
                 if table_name and table_name in self.alias_table:
                     full_col_key = f"{self.alias_table[table_name]}.{left.name}"
                 else:
                     full_col_key = f"{table_name}.{left.name}" if table_name else left.name
 
-                # 提取比较值
                 if not isinstance(right, exp.Literal):
                     continue
 
@@ -310,13 +297,11 @@ class Query:
                 except (ValueError, TypeError):
                     continue
 
-                # 收集该列的谓词信息
                 if full_col_key not in column_predicates:
                     column_predicates[full_col_key] = []
 
                 column_predicates[full_col_key].append({"operator": expr.key, "value": value, "sql": predicate_str})
 
-        # 第二步：为每个列计算合并后的区间范围
         for full_col_key, predicates in column_predicates.items():
             if full_col_key not in statistics.columns_domain:
                 logging.warning(f"Column {full_col_key} not found in statistics. Skipping...")
@@ -326,10 +311,8 @@ class Query:
             if isinstance(col_min, str) or isinstance(col_max, str):
                 continue
 
-            # 计算该列的有效区间列表（支持多个不连续区间）
             valid_intervals = []
 
-            # 初始化：从列的完整域开始
             current_intervals = [(col_min, col_max)]
 
             for pred in predicates:
@@ -339,7 +322,6 @@ class Query:
 
                 for interval_start, interval_end in current_intervals:
                     if operator in ("gt", "gte"):
-                        # 处理大于条件：保留大于value的部分
                         if operator == "gt":
                             if value < interval_end:
                                 new_intervals.append((max(interval_start, value), interval_end))
@@ -348,7 +330,6 @@ class Query:
                                 new_intervals.append((max(interval_start, value), interval_end))
 
                     elif operator in ("lt", "lte"):
-                        # 处理小于条件：保留小于value的部分
                         if operator == "lt":
                             if value > interval_start:
                                 new_intervals.append((interval_start, min(interval_end, value)))
@@ -357,54 +338,41 @@ class Query:
                                 new_intervals.append((interval_start, min(interval_end, value)))
 
                     elif operator == "eq":
-                        # 等值条件：只保留等于value的部分
                         if interval_start <= value <= interval_end:
                             new_intervals.append((value, value))
 
                     elif operator == "neq":
-                        # 不等值条件：排除等于value的部分
                         if value > interval_start:
                             new_intervals.append((interval_start, value))
                         if value < interval_end:
                             new_intervals.append((value, interval_end))
 
-                # 更新当前区间列表
                 current_intervals = new_intervals
 
-                # 如果没有有效区间，说明条件矛盾
                 if not current_intervals:
                     break
 
-            # 最终的有效区间
             valid_intervals = current_intervals
 
-            # 检查是否有有效区间
             if not valid_intervals:
                 logging.debug(f"No valid intervals for column {full_col_key} after applying predicates. Skipping...")
                 continue
 
-            # 第三步：根据有效区间生成编码向量
-            # 划分等宽区间
             bin_width = (col_max - col_min) / vector_size
             bins = [col_min + i * bin_width for i in range(vector_size + 1)]
 
-            # 计算谓词覆盖的区间索引
             covered_indices = []
 
-            # 对每个有效区间，找到覆盖的所有bin
             for interval_start, interval_end in valid_intervals:
                 for i in range(vector_size):
                     bin_start = bins[i]
                     bin_end = bins[i + 1] if i < vector_size - 1 else bins[i + 1]
 
-                    # 检查bin是否与有效区间有交集
                     if not (bin_end < interval_start or bin_start > interval_end):
                         covered_indices.append(i)
 
-            # 去重并排序
             covered_indices = sorted(list(set(covered_indices)))
 
-            # 过滤无效区间索引
             covered_indices = [i for i in covered_indices if 0 <= i < vector_size]
             m = len(covered_indices)
 
@@ -412,20 +380,15 @@ class Query:
                 logging.warning(f"No valid bins for column {full_col_key}. Skipping...")
                 continue
 
-            # 初始化或更新列的编码向量
             if full_col_key not in predicate_vector:
                 predicate_vector[full_col_key] = np.zeros(vector_size, dtype=np.float32)
 
-            # 为覆盖的区间设置权重
             for idx in covered_indices:
                 predicate_vector[full_col_key][idx] += 1.0 / m
 
         return predicate_vector
 
     def _get_cardinality_from_pg_(self, database_connector: PostgresDatabaseConnector):
-        """
-        从PostgreSQL查询获取查询的估计基数
-        """
         result = database_connector._get_plan(self.text)
         if result:
             self.predicted_cardinality = result["Plan Rows"]
@@ -435,13 +398,6 @@ class Query:
             return None
 
     def to_vector(self, statistics, max_columns: int, predicate_vec_size: int, max_edges: int):
-        """
-        query vec => columns *
-                        [column_distribution, table_level_vector, predicates_range, #cardinality#, #index#]
-
-        JOIN GRAPH => edge_idnex = [[start_node],[end_node]]
-        edge_weight = [weight] 1->JOIN 0.25->same table
-        """
         predicates_vector = self.predicates_vector(predicate_vec_size, statistics)
         query_vec = []
         node_masking = [0 for _ in range(max_columns)]
@@ -460,7 +416,6 @@ class Query:
                 column_index[table_column] = len(column_index)
             col_distribution = statistics.columns_vec_dict[table_column]
             table_level_vector = statistics.tables_vec_dict[table_name]
-            # 判断table_column是否在predicates_vector中
             if table_column in predicates_vector.keys():
                 predicate_range_vec = predicates_vector[table_column]
             else:
@@ -512,7 +467,6 @@ class Query:
             node_masking = [0 if i > len(query_vec) else 1 for i in range(max_columns)]
             for _ in range(max_columns - len(query_vec)):
                 query_vec.append(np.zeros(len(query_vec[0])))
-        # 处理edge_index和edge_weight的padding和masking
         edge_masking = [1 for _ in range(len(edge_weight))]
         if len(edge_weight) > max_edges:
             edge_index[0] = edge_index[0][:max_edges]
